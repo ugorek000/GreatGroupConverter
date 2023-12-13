@@ -1,5 +1,5 @@
-bl_info = {'name':"GreatGroupConverter", 'author':"ugorek", 'version':(9,9,9), 'blender':(4,0,2), #2023.12.13
-           'description':"", 'location':"N Panel > *select group* > Misc",
+bl_info = {'name':"GreatGroupConverter", 'author':"ugorek", 'version':(2,0,1), 'blender':(4,0,2), #2023.12.13
+           'description':"", 'location':"N Panel > Tool",
            'warning':"Non-zero chance of crash in unexplored exceptions", 'category':"Node",
            'wiki_url':"https://github.com/ugorek000/GreatGroupConverter/wiki", 'tracker_url':"https://github.com/ugorek000/GreatGroupConverter/issues"}
 addonName = bl_info['name']
@@ -309,16 +309,16 @@ list_lastConverts = []
 lastConvertTree = None
 
 set_gncNdPollTypeTarget = {'GROUP', 'GROUP_INPUT', 'GROUP_OUTPUT'}
-def GetTargetConvert(tree):
-    if tree:
-        aNd = tree.nodes.active
-        if (aNd)and(aNd.type in set_gncNdPollTypeTarget):
-            if aNd.type=='GROUP':
-                if aNd.node_tree:
-                    return aNd.node_tree
+def GetTargetsToConvert(tree):
+    list_result = []
+    for nd in tree.nodes:
+        if (nd.select)and(nd.type in set_gncNdPollTypeTarget):
+            if nd.type=='GROUP':
+                if nd.node_tree:
+                    list_result.append(nd.node_tree)
             else:
-                return tree
-    return None
+                list_result.append(tree)
+    return list_result
 
 class OpGreatGroupConverter(bpy.types.Operator):
     bl_idname = 'node.gnc_op_greatnodeconverter'
@@ -330,9 +330,10 @@ class OpGreatGroupConverter(bpy.types.Operator):
         global lastConvert
         match self.opt:
             case 'Conv':
-                lastConvertTree = RecrDoConvertNodeTree(GetTargetConvert(context.space_data.edit_tree), self.who)
-                if not(lastConvertTree in list_lastConverts):
-                    list_lastConverts.append(lastConvertTree)
+                for li in GetTargetsToConvert(context.space_data.edit_tree):
+                    lastConvertTree = RecrDoConvertNodeTree(li, self.who)
+                    if not(lastConvertTree in list_lastConverts):
+                        list_lastConverts.append(lastConvertTree)
             case 'Add':
                 bpy.ops.node.add_node('INVOKE_DEFAULT', type=context.space_data.tree_type.replace("Tree", "Group"), use_transform=True)
                 context.space_data.edit_tree.nodes.active.node_tree = bpy.data.node_groups.get(self.who)
@@ -345,26 +346,23 @@ class PanelGreatGroupConverter(bpy.types.Panel):
     bl_label = "Great Group Converter"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
-    #bl_category = 'Tool'
+    bl_category = 'Tool'
     bl_options = {'DEFAULT_CLOSED'}
     bl_order = 131071
-    @classmethod
-    def poll(cls, context):
-        if list_lastConverts:
-            return True
-        return GetTargetConvert(context.space_data.edit_tree)
     def draw(self, context):
         colLy = self.layout.column()
-        treeTarget = GetTargetConvert(context.space_data.edit_tree)
+        tree = context.space_data.edit_tree
+        list_targets = GetTargetsToConvert(tree)
         colMain = colLy.column(align=True)
         bow = colMain.box()
         bow.scale_y = 0.5
-        if treeTarget:
-            AddHighlightingText(bow.row(), "Convert", treeTarget.name, "to:")
+        if list_targets:
+            for li in list_targets:
+                AddHighlightingText(bow.row(), "Convert", li.name, "to"+":"*(li==tree))
         else:
-            AddHighlightingText(bow.row(), ' ')
+            AddHighlightingText(bow.row(), '* none to selected *')
         rowConv = colMain.row(align=True)
-        rowConv.enabled = not not treeTarget
+        rowConv.enabled = not not list_targets
         for di in dict_mapTreeIco:
             row = rowConv.row(align=True)
             row.scale_x = 2.05
