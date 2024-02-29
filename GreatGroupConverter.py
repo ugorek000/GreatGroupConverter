@@ -1,5 +1,5 @@
 bl_info = {'name':"GreatGroupConverter", 'author':"ugorek",
-           'version':(2,2,2), 'blender':(4,0,2), 'created':"2024.02.29",
+           'version':(2,2,3), 'blender':(4,0,2), 'created':"2024.02.29",
            'description':"Transferring identical nodes between editors.", 'location':"N Panel > Tool",
            'warning':"Non-zero chance of crash in unexplored exceptions", 'category':"Node",
            'wiki_url':"https://github.com/ugorek000/GreatGroupConverter/wiki", 'tracker_url':"https://github.com/ugorek000/GreatGroupConverter/issues"}
@@ -50,6 +50,12 @@ class NodeFiller(bpy.types.Node):
     blid: bpy.props.StringProperty(default="Ggc Node Filler")
     def draw_label(self):
         return self.blid
+
+class TryAndPass():
+    def __enter__(self):
+        pass
+    def __exit__(self, *_):
+        return True
 
 import ctypes
 
@@ -225,24 +231,19 @@ def TranslateSkfs(treeFrom, treeTo):
             if (not pr.is_readonly)and(pr.identifier not in {'socket_type','bl_socket_idname'}): #Про 'bl_socket_idname' см.: projects.blender.org/blender/blender/issues/116082 projects.blender.org/blender/blender/issues/116116
                 txt = "."+pr.identifier
                 txt = repr(skfTo)+txt+" = "+repr(skfFrom)+txt
-                try: #Из-за 'NodeSocketString'; а также см. багрепорты выше.
+                with TryAndPass(): #Из-за 'NodeSocketString'; а также см. багрепорты выше.
                     exec(txt) #Легально устанавливать что-то не задалось; см. ниже.
-                except:
-                    pass
                 #setattr(skfTo, pr.identifier, getattr(skfFrom, pr.identifier))
                 #range(min(pr.array_length, skfTo.bl_rna.properties[pr.identifier].array_length))
                 #if getattr(pr,'is_array', None): getattr(skfTo, pr.identifier)[cyc] = getattr(skfFrom, pr.identifier)[cyc] #Чёрная магия, оно не работает, красный в зелёный пишется и далее со сдвигом.
                 #Это как-то связано? `tree.interface.items_tree[0].bl_rna.properties['default_value'].array_dimensions[1]`?
+            #todo1 писать через ctypes в идентификатор? Поскольку интерфейсы только отчищаются, их dnf накапливается, и последующие конвертации могут не найти сокет у выхода группы по его dnf'у.
         if not isSucessType:
             match treeTo.bl_idname:
-                case 'ShaderNodeTree':
-                    skfTo.socket_type = 'NodeSocketShader'
-                case 'GeometryNodeTree':
-                    skfTo.socket_type = 'NodeSocketGeometry'
-                case 'CompositorNodeTree':
-                    skfTo.socket_type = 'NodeSocketColor'
-                case 'TextureNodeTree':
-                    skfTo.socket_type = 'NodeSocketVector'
+                case 'ShaderNodeTree':     skfTo.socket_type = 'NodeSocketShader'
+                case 'GeometryNodeTree':   skfTo.socket_type = 'NodeSocketGeometry'
+                case 'CompositorNodeTree': skfTo.socket_type = 'NodeSocketColor'
+                case 'TextureNodeTree':    skfTo.socket_type = 'NodeSocketVector'
             skfTo.name = f"⚠️ {skfTo.name} ‒ '{skfFrom.socket_type}' not found"
             skfTo.hide_value = True
 
@@ -273,7 +274,11 @@ def TranslateNodes(treeFrom, treeTo, suffix):
     def TranslateSkRna(skFrom, skTo):
         for pr in reversed(skFrom.bl_rna.properties):
             if (not pr.is_readonly)and(pr.identifier not in {'type', 'bl_idname'}):
-                setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
+                if pr.identifier=='default_value':
+                    with TryAndPass(): #Что-то не чистое творится, группа из шейдеров в геометрию, содержащая интерфейс вектора нарпавления.
+                        setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
+                else:
+                    setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
     def TranslateSockets(putsFrom, putsTo):
         for skFrom in putsFrom:
             for skTo in putsTo: #Заметка: Одинаковые имена сокетов у math и vector нода.
@@ -306,7 +311,7 @@ def TranslateNodes(treeFrom, treeTo, suffix):
                 ndTo.outputs[0].type = ndFrom.outputs[0].type
             TranslateSockets(ndFrom.inputs, ndTo.inputs)
             TranslateSockets(ndFrom.outputs, ndTo.outputs)
-        except: #import traceback; pri nt(traceback.format_exc())
+        except: #import traceback; prin t(traceback.format_exc())
             if ndTo: #Для своих NodeFiller, и в целом общее.
                 treeTo.nodes.remove(ndTo)
             ndFi = treeTo.nodes.new(NodeFiller.bl_idname)
@@ -352,6 +357,7 @@ def PlaceRerouteFromSocket(skTar, tree=None):
     bNd.locy = loc[1]
     return rr
 def DoConvertNodeTreeRecr(treeFrom, blidTo, suffix):
+    #todo1 посмотреть что там по двойным заходам в одно и тоже дерево в связи рекурсии; кажется нужды метки "уже сконвертированно".
     def TranslateLinks(treeFrom, treeTo): #Благодаря гениальной идеи кастомного нода, перенос линков сколлапсировался до 3-х строчек. Огонь!
         def GetSkFromSkHh(nd, skTar):
             for sk in nd.outputs if skTar.is_output else nd.inputs:
@@ -378,7 +384,7 @@ def DoConvertNodeTreeRecr(treeFrom, blidTo, suffix):
             lkNew.is_muted = lkFrom.is_muted
             for sk in skIn, skOut: #'GeometryNodeStoreNamedAttribute' в шейдер, см. идентификаторы и ветку по именам в GetSkFromSkHh().
                 skIn.enabled = True
-                skIn.hide = False
+                #skIn.hide = False #С этим может крашнуться.
     nameTo = treeFrom.name
     if not nameTo.endswith(suffix):
         nameTo += suffix
