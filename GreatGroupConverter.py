@@ -1,5 +1,6 @@
-bl_info = {'name':"GreatGroupConverter", 'author':"ugorek", 'version':(2,0,2), 'blender':(4,0,2), #2023.12.13
-           'description':"", 'location':"N Panel > Tool",
+bl_info = {'name':"GreatGroupConverter", 'author':"ugorek",
+           'version':(2,2,2), 'blender':(4,0,2), 'created':"2024.02.29",
+           'description':"Transferring identical nodes between editors.", 'location':"N Panel > Tool",
            'warning':"Non-zero chance of crash in unexplored exceptions", 'category':"Node",
            'wiki_url':"https://github.com/ugorek000/GreatGroupConverter/wiki", 'tracker_url':"https://github.com/ugorek000/GreatGroupConverter/issues"}
 addonName = bl_info['name']
@@ -8,16 +9,18 @@ from builtins import len as length
 import bpy, re
 import mathutils
 
-list_classes = []
+dict_mapTreeIco = {'ShaderNodeTree':'NODE_MATERIAL', 'GeometryNodeTree':'GEOMETRY_NODES', 'CompositorNodeTree':'NODE_COMPOSITING', 'TextureNodeTree':'NODE_TEXTURE'}
 
-set_ignoredNdProps = {'node_tree', 'bl_idname'} #На счёт второго не знаю.
-def FullCopyNode(fromNd, toNd):
+def FullCopyFromNode(fromNd, toNd):
     for pr in fromNd.bl_rna.properties:
-        if (not pr.is_readonly)and(pr.identifier not in set_ignoredNdProps):
-            try: #Для разных нод между Shader и Texture с одинаковым названием; например ShaderNodeTexNoise.
+        #if pr.identifier=='location':
+        #    bNd = BNode.GetFields(toNd)
+        #    bNd.locx = fromNd.location.x
+        #    bNd.locy = fromNd.location.y
+        #else
+        if (not pr.is_readonly)and(pr.identifier not in {'node_tree', 'bl_idname'}): #На счёт второго не знаю.
+            if pr.identifier in toNd.bl_rna.properties: #Для разных нод между Shader и Texture с одинаковым названием; например ShaderNodeTexNoise.
                 setattr(toNd, pr.identifier, getattr(fromNd, pr.identifier))
-            except:
-                pass
             #Заметка: теперь где-то естественным образом обрабатывается NoiseTexture между ShaderNodeEditor и TextureNodeEditor.
     if hasattr(fromNd,'color_ramp'):
         for pr in fromNd.color_ramp.bl_rna.properties:
@@ -27,7 +30,7 @@ def FullCopyNode(fromNd, toNd):
             toNd.color_ramp.elements.new(0.0)
         for cyc in range(length(fromNd.color_ramp.elements)):
             toNd.color_ramp.elements[cyc].position = fromNd.color_ramp.elements[cyc].position
-            toNd.color_ramp.elements[cyc].color =    fromNd.color_ramp.elements[cyc].color
+            toNd.color_ramp.elements[cyc].color    = fromNd.color_ramp.elements[cyc].color
     if hasattr(fromNd,'mapping'):
         for pr in fromNd.mapping.bl_rna.properties:
             if not pr.is_readonly:
@@ -36,21 +39,17 @@ def FullCopyNode(fromNd, toNd):
             for cyc2 in range(length(fromNd.mapping.curves[cyc1].points)-2):
                 toNd.mapping.curves[cyc1].points.new(0.0, 1.0)
             for cyc2 in range(length(fromNd.mapping.curves[cyc1].points)):
-                toNd.mapping.curves[cyc1].points[cyc2].location =    fromNd.mapping.curves[cyc1].points[cyc2].location
+                toNd.mapping.curves[cyc1].points[cyc2].location    = fromNd.mapping.curves[cyc1].points[cyc2].location
                 toNd.mapping.curves[cyc1].points[cyc2].handle_type = fromNd.mapping.curves[cyc1].points[cyc2].handle_type
 
 class NodeFiller(bpy.types.Node):
     bl_idname = 'GgcNodeFiller'
     bl_label = "Node Filler"
     bl_width_max = 1024
-    bl_width_min = 0
+    bl_width_min = 64
     blid: bpy.props.StringProperty(default="Ggc Node Filler")
     def draw_label(self):
         return self.blid
-    def draw_buttons(self, context, layout):
-        pass
-
-list_classes += [NodeFiller]
 
 import ctypes
 
@@ -68,24 +67,53 @@ class StructBase(ctypes.Structure):
                 cls._fields_ = fields
             cls.__annotations__.clear()
         StructBase._subclasses.clear()
+    @classmethod
+    def GetFields(cls, tar):
+        return cls.from_address(tar.as_pointer())
 
-class BNodeType(StructBase): #source\blender\blenkernel\BKE_node.h
-    idname:         ctypes.c_char*64
-    type:           ctypes.c_int
-    ui_name:        ctypes.c_char*64
-    ui_description: ctypes.c_char*256
-    ui_icon:        ctypes.c_int
-    if bpy.app.version>=(4,0,0):
-        char:           ctypes.c_void_p
-    width:          ctypes.c_float
-    minwidth:       ctypes.c_float
-    maxwidth:       ctypes.c_float
-    height:         ctypes.c_float
-    minheight:      ctypes.c_float
-    maxheight:      ctypes.c_float
-    nclass:         ctypes.c_int16 #github.com/ugorek000/ManagersNodeTree
+class BNodeSocketRuntimeHandle(StructBase): #\source\blender\makesdna\DNA_node_types.h
+    _pad0:        ctypes.c_char*8
+    declaration:  ctypes.c_void_p
+    changed_flag: ctypes.c_uint32
+    total_inputs: ctypes.c_short
+    _pad1:        ctypes.c_char*2
+    location:     ctypes.c_float*2
+class BNodeStack(StructBase):
+    vec:        ctypes.c_float*4
+    min:        ctypes.c_float
+    max:        ctypes.c_float
+    data:       ctypes.c_void_p
+    hasinput:   ctypes.c_short
+    hasoutput:  ctypes.c_short
+    datatype:   ctypes.c_short
+    sockettype: ctypes.c_short
+    is_copy:    ctypes.c_short
+    external:   ctypes.c_short
+    _pad:       ctypes.c_char*4
+class BNodeSocket(StructBase):
+    next:                   ctypes.c_void_p
+    prev:                   ctypes.c_void_p
+    prop:                   ctypes.c_void_p
+    identifier:             ctypes.c_char*64
+    name:                   ctypes.c_char*64
+    storage:                ctypes.c_void_p
+    type:                   ctypes.c_short
+    flag:                   ctypes.c_short
+    limit:                  ctypes.c_short
+    typeinfo:               ctypes.c_void_p
+    idname:                 ctypes.c_char*64
+    default_value:          ctypes.c_void_p
+    _pad:                   ctypes.c_char*4
+    label:                  ctypes.c_char*64
+    description:            ctypes.c_char*64
+    short_label:            ctypes.c_char*64
+    default_attribute_name: ctypes.POINTER(ctypes.c_char)
+    to_index:               ctypes.c_int
+    link:                   ctypes.c_void_p
+    ns:                     BNodeStack
+    runtime:                ctypes.POINTER(BNodeSocketRuntimeHandle)
 
-class BNode(StructBase): #source\blender\makesdna\DNA_node_types.h:
+class BNode(StructBase): #\source\blender\makesdna\DNA_node_types.h:
     next:       ctypes.c_void_p
     prev:       ctypes.c_void_p
     inputs:     ctypes.c_void_p*2
@@ -94,7 +122,7 @@ class BNode(StructBase): #source\blender\makesdna\DNA_node_types.h:
     identifier: ctypes.c_int
     flag:       ctypes.c_int
     idname:     ctypes.c_char*64
-    typeinfo:   ctypes.POINTER(BNodeType)
+    typeinfo:   ctypes.c_void_p
     type:       ctypes.c_int16
     ui_order:   ctypes.c_int16
     custom1:    ctypes.c_int16
@@ -113,214 +141,288 @@ class BNode(StructBase): #source\blender\makesdna\DNA_node_types.h:
     offsety:    ctypes.c_float
     label:      ctypes.c_char*64
     color:      ctypes.c_float*3
-    @classmethod
-    def get_fields(cls, so):
-        return cls.from_address(so.as_pointer())
 
 StructBase.InitStructs()
 
 def GetSocketIndex(sk):
     return int(sk.path_from_id().split(".")[-1].split("[")[-1][:-1])
 
+class RemLink():
+    def __init__(self, lk, isSide):
+        self.tree = lk.id_data
+        self.from_socket = lk.from_socket
+        self.from_ndName = lk.from_node.name
+        self.from_skName = lk.from_socket.name
+        self.from_inx = GetSocketIndex(lk.from_socket)
+        self.to_socket = lk.to_socket
+        self.to_ndName = lk.to_node.name
+        self.to_skName = lk.to_socket.name
+        self.to_inx = GetSocketIndex(lk.from_socket)
+        self.isSide = isSide
+    @property
+    def left_socket(self):
+        if self.isSide:
+            nd = self.tree.nodes[self.from_ndName]
+            len = length(nd.outputs)
+            return nd.outputs.get(self.from_skName, nd.outputs[self.from_inx] if self.from_inx<len else None) #По именам приоритетнее, потому что.
+        else:
+            return self.from_socket
+    @property
+    def right_socket(self):
+        if self.isSide:
+            return self.to_socket
+        else:
+            nd = self.tree.nodes[self.to_ndName]
+            len = length(nd.inputs)
+            return nd.inputs.get(self.to_skName, nd.inputs[self.to_inx] if self.to_inx<len else None)
+class RemNode():
+    def __init__(self, nd):
+        self.nd = nd
+        self.tree = nd.id_data
+        self.list_remLink = []
+        self.list_socketVal = []
 def RememberAllLinks(nameTar):
-    list_allFoundLinks = []
-    list_allFoundNodes = []
-    def RememberLinks(tree, nameTar):
+    list_remNode = []
+    def RememberLinks(tree):
         for nd in tree.nodes:
-            if (getattr(nd, 'node_tree', False))and(nd.node_tree.name==nameTar):
+            if (nd.type=='GROUP')and(nd.node_tree)and(nd.node_tree.name==nameTar):
+                remNode = RemNode(nd)
                 for lk in tree.links:
-                    if (lk.from_node==nd)or(lk.to_node==nd):
-                        list_allFoundLinks.append( (lk.id_data,
-                                                    lk.from_node.name, lk.from_socket.name, GetSocketIndex(lk.from_socket),
-                                                    lk.to_node.name,   lk.to_socket.name,   GetSocketIndex(lk.to_socket)) )
-                list_allFoundNodes.append( (nd, []) )
+                    if lk.to_node==nd:
+                        remNode.list_remLink.append(RemLink(lk, False))
+                    elif lk.from_node==nd: #Заметка: elif.
+                        remNode.list_remLink.append(RemLink(lk, True))
                 for sk in nd.inputs:
-                    if hasattr(sk, 'default_value'):
-                        list_allFoundNodes[-1][1].append( (sk.name, sk.default_value[:] if getattr(sk.bl_rna.properties['default_value'],'is_array', False) else sk.default_value) )
+                    if 'default_value' in sk.bl_rna.properties:
+                        remNode.list_socketVal.append( (sk.name, sk.default_value[:] if getattr(sk.bl_rna.properties['default_value'],'is_array', None) else sk.default_value) )
+                list_remNode.append(remNode)
     for ng in bpy.data.node_groups:
-        RememberLinks(ng, nameTar)
-    for si in {'materials', 'worlds', 'lights', 'linestyles', 'scenes', 'textures'}:
-        for wh in getattr(bpy.data, si):
-            if wh.node_tree:
-                RememberLinks(wh.node_tree, nameTar)
-    return list_allFoundLinks, list_allFoundNodes
-def RestoreAllLinks(list_allFoundLinks, list_allFoundNodes): #Остерегаться одинаковых имён!
-    for li in list_allFoundLinks:
-        try: #По имени приоритетнее, потому что!
-            li[0].links.new( li[0].nodes.get(li[1]).outputs.get(li[2]), li[0].nodes.get(li[4]).inputs.get(li[5]) )
-        except:
-            li[0].links.new( li[0].nodes.get(li[1]).outputs[li[3]],     li[0].nodes.get(li[4]).inputs[li[6]] )
-    for li in list_allFoundNodes: #Восстановить содержимое не подсоединённых сокетов.
-        for saved in li[1]:
-            sk = li[0].inputs.get(saved[0])
-            if sk:
-                sk.default_value = saved[1]
+        if ng.bl_idname in {'ShaderNodeTree','GeometryNodeTree','CompositorNodeTree','TextureNodeTree'}:
+            RememberLinks(ng)
+    for att in {'materials', 'worlds', 'lights', 'linestyles', 'scenes', 'textures'}:
+        for dt in getattr(bpy.data, att):
+            if dt.node_tree:
+                RememberLinks(dt.node_tree)
+    return list_remNode
+def RestoreAllLinks(list_remNode):
+    for remNode in list_remNode:
+        for remLink in remNode.list_remLink:
+            remNode.tree.links.new(remLink.left_socket, remLink.right_socket)
+        for li in remNode.list_socketVal: #Восстановить содержимое неподсоединённых сокетов.
+            if sk:=remNode.nd.inputs.get(li[0]):
+                sk.default_value = li[1]
 
-set_ignoredSkProps = {'type', 'bl_idname'}
-#Про 'bl_socket_idname' см.:
-#projects.blender.org/blender/blender/issues/116082
-#projects.blender.org/blender/blender/issues/116116
-set_ignoredSkfProps = {'socket_type','bl_socket_idname'}
-def InterfacesTransfer(treeFrom, treeTo):
+def TranslateSkfs(treeFrom, treeTo):
     treeTo.interface.clear()
     for skfFrom in treeFrom.interface.items_tree:
         skfTo = treeTo.interface.new_socket(skfFrom.bl_socket_idname, in_out=skfFrom.in_out)
-        err = None
+        isSucessType = True
         try:
             skfTo.socket_type = skfFrom.socket_type
         except:
-            err = skfFrom.socket_type+" not found"
+            isSucessType = False
         for pr in skfFrom.bl_rna.properties:
-            if (not pr.is_readonly)and(pr.identifier not in set_ignoredSkfProps):
-                if pr.identifier in skfTo.bl_rna.properties: #Не знаю, только эстетика, или влияет на что.
-                    txt = "."+pr.identifier
-                    txt = repr(skfTo)+txt+" = "+repr(skfFrom)+txt
-                    try: #Из-за 'NodeSocketString'; а также см. багрепорты выше.
-                        exec(txt) #Легально устанавливать что-то не задалось; см. ниже.
-                    except:
-                        pass
-                    #setattr(skfTo, pr.identifier, getattr(skfFrom, pr.identifier))
-                    #range(min(pr.array_length, skfTo.bl_rna.properties[pr.identifier].array_length))
-                    #if getattr(pr,'is_array', None): getattr(skfTo, pr.identifier)[cyc] = getattr(skfFrom, pr.identifier)[cyc] #Чёрная магия, оно не работает, красный в зелёный пишется и далее со сдвигом.
-                    #Это как-то связано? `tree.interface.items_tree[0].bl_rna.properties['default_value'].array_dimensions[1]`?
-        if err:
-            skfTo.name = "⚠️ "+skfTo.name+" ‒ "+err.split("enum")[-1]
+            if (not pr.is_readonly)and(pr.identifier not in {'socket_type','bl_socket_idname'}): #Про 'bl_socket_idname' см.: projects.blender.org/blender/blender/issues/116082 projects.blender.org/blender/blender/issues/116116
+                txt = "."+pr.identifier
+                txt = repr(skfTo)+txt+" = "+repr(skfFrom)+txt
+                try: #Из-за 'NodeSocketString'; а также см. багрепорты выше.
+                    exec(txt) #Легально устанавливать что-то не задалось; см. ниже.
+                except:
+                    pass
+                #setattr(skfTo, pr.identifier, getattr(skfFrom, pr.identifier))
+                #range(min(pr.array_length, skfTo.bl_rna.properties[pr.identifier].array_length))
+                #if getattr(pr,'is_array', None): getattr(skfTo, pr.identifier)[cyc] = getattr(skfFrom, pr.identifier)[cyc] #Чёрная магия, оно не работает, красный в зелёный пишется и далее со сдвигом.
+                #Это как-то связано? `tree.interface.items_tree[0].bl_rna.properties['default_value'].array_dimensions[1]`?
+        if not isSucessType:
+            match treeTo.bl_idname:
+                case 'ShaderNodeTree':
+                    skfTo.socket_type = 'NodeSocketShader'
+                case 'GeometryNodeTree':
+                    skfTo.socket_type = 'NodeSocketGeometry'
+                case 'CompositorNodeTree':
+                    skfTo.socket_type = 'NodeSocketColor'
+                case 'TextureNodeTree':
+                    skfTo.socket_type = 'NodeSocketVector'
+            skfTo.name = f"⚠️ {skfTo.name} ‒ '{skfFrom.socket_type}' not found"
             skfTo.hide_value = True
 
+set_omgApiNodesName = {'ShaderNodeOutputAOV'}
 
-set_quartetNames = {"Shader", "Geometry", "Compositor", "Texture"}
-reQuartetPatt = "^("+"|".join(set_quartetNames)+")"
-set_geoExceptions = {'NodeValToRGB','NodeMixRGB','NodeRGBCurve','NodeTexBrick','NodeTexChecker','NodeTexGradient','NodeTexMagic','NodeTexMusgrave',
-        'NodeTexNoise','NodeTexVoronoi','NodeTexWave','NodeTexWhiteNoise','NodeClamp','NodeFloatCurve','NodeMapRange','NodeMath','NodeCombineXYZ',
-        'NodeSeparateXYZ','NodeVectorCurve','NodeVectorMath','NodeVectorRotate','NodeValue'}
-set_canonTrees = {'ShaderNodeTree', 'GeometryNodeTree'}
-def MixThCol(col1, col2, fac=0.4): #/source/blender/editors/space_node/node_draw.cc  node_draw_basis()  /* Header. */
-    return col1*(1-fac)+col2*fac
-def NodesTransfer(treeFrom, treeTo):
+def TranslateNodes(treeFrom, treeTo, suffix):
+    def OmgSetNodeColor(nd, col): #https://github.com/ugorek000/VoronoiLinker
+        if nd.bl_idname=='FunctionNodeInputColor': #https://projects.blender.org/blender/blender/issues/104909
+            bn = BNode.GetFields(nd)
+            if col:
+                bn.color[0] = col[0]
+                bn.color[1] = col[1]
+                bn.color[2] = col[2]
+        else:
+            nd.color = col
     treeTo.nodes.clear()
+    neTheme = bpy.context.preferences.themes[0].node_editor
+    colBg = mathutils.Color(neTheme.node_backdrop[:3])
+    #Пайки:
     blidGroupFrom = treeFrom.bl_idname.replace("Tree","Group")
     blidGroupTo = treeTo.bl_idname.replace("Tree","Group")
     blidTo = treeTo.bl_idname
     blidRawTo = blidTo.replace("NodeTree","")
-    neTheme = bpy.context.preferences.themes[0].node_editor
-    colBg = mathutils.Color(neTheme.node_backdrop[:3])
+    set_geoExceptions = {'NodeValToRGB','NodeMixRGB','NodeRGBCurve','NodeTexBrick','NodeTexChecker','NodeTexGradient','NodeTexMagic','NodeTexMusgrave',
+            'NodeTexNoise','NodeTexVoronoi','NodeTexWave','NodeTexWhiteNoise','NodeClamp','NodeFloatCurve','NodeMapRange','NodeMath','NodeCombineXYZ',
+            'NodeSeparateXYZ','NodeVectorCurve','NodeVectorMath','NodeVectorRotate','NodeValue'}
+    reQuartetPatt = "^("+"|".join({"Shader", "Geometry", "Compositor", "Texture"})+")"
+    def TranslateSkRna(skFrom, skTo):
+        for pr in reversed(skFrom.bl_rna.properties):
+            if (not pr.is_readonly)and(pr.identifier not in {'type', 'bl_idname'}):
+                setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
+    def TranslateSockets(putsFrom, putsTo):
+        for skFrom in putsFrom:
+            for skTo in putsTo: #Заметка: Одинаковые имена сокетов у math и vector нода.
+                if skTo.identifier==skFrom.identifier: #Заметка: RGBCurve между Shader и Compositor.
+                    TranslateSkRna(skFrom, skTo)
+                    break
     for ndFrom in treeFrom.nodes:
         try:
             ndTo = None
-            txt = ndFrom.bl_idname
-            if txt==blidGroupFrom:
-                txt = blidGroupTo
-            blidTrySame = re.sub(reQuartetPatt, blidRawTo, txt)
+            blid = ndFrom.bl_idname
+            if blid==blidGroupFrom:
+                blid = blidGroupTo
+            blidTrySame = re.sub(reQuartetPatt, blidRawTo, blid)
             if hasattr(bpy.types, blidTrySame):
-                txt = blidTrySame
-            blidRaw = re.sub(reQuartetPatt, "", txt)
+                blid = blidTrySame
+            blidRaw = re.sub(reQuartetPatt, "", blid)
             if (blidTo=='GeometryNodeTree')and(blidRaw in set_geoExceptions):
-                txt = "Shader"+blidRaw
+                blid = "Shader"+blidRaw
             if blidTo=='CompositorNodeTree':
-                txt = {'ShaderNodeRGBCurve':'CompositorNodeCurveRGB', 'ShaderNodeVectorCurve':'CompositorNodeCurveVec'}.get(txt, txt)
-            if blidTo=='ShaderNodeTree':
-                txt = {'CompositorNodeCurveRGB':'ShaderNodeRGBCurve', 'CompositorNodeCurveVec':'ShaderNodeVectorCurve'}.get(txt, txt)
-            ndTo = treeTo.nodes.new(txt)
-            FullCopyNode(ndFrom, ndTo)
-            if hasattr(ndTo,'node_tree'):
-                ndTo.node_tree = RecrDoConvertNodeTree(ndFrom.node_tree, blidTo) #Заметка: и пораньше тоже можно, но тогда пришлось бы париться с annex.
-            def TransferNodePuts(putsFrom, putsTo):
-                for skFrom in putsFrom: #Заметка: перенос своих же NodeFiller.
-                    #Заметка: по имени, а не по индексу. Например VectorCurve между Shader и Compositor различается фактором.
-                    skTo = putsTo.get(skFrom.name)
-                    if skTo:
-                        for pr in skFrom.bl_rna.properties:
-                            if (not pr.is_readonly)and(pr.identifier not in set_ignoredSkProps): #Здесь без set_ignoredSkProps вроде не крашится.
-                                setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
-            if ndTo.bl_idname==NodeFiller.bl_idname:
-                1/0 #В TransferNodePuts() теперь по имени, а не по индексу, так что всё ещё "не обломались".
-            TransferNodePuts(ndFrom.inputs, ndTo.inputs)
-            TransferNodePuts(ndFrom.outputs, ndTo.outputs)
-        except Exception as ex:
+                blid = {'ShaderNodeRGBCurve':'CompositorNodeCurveRGB', 'ShaderNodeVectorCurve':'CompositorNodeCurveVec'}.get(blid, blid)
+            if blidTo in {'ShaderNodeTree', 'GeometryNodeTree'}:
+                blid = {'CompositorNodeCurveRGB':'ShaderNodeRGBCurve', 'CompositorNodeCurveVec':'ShaderNodeVectorCurve'}.get(blid, blid)
+            ndTo = treeTo.nodes.new(blid)
+            FullCopyFromNode(ndFrom, ndTo)
+            if ('node_tree' in ndTo.bl_rna.properties)and(ndFrom.node_tree):
+                ndTo.node_tree = DoConvertNodeTreeRecr(ndFrom.node_tree, blidTo, suffix)
+            assert ndTo.bl_idname!=NodeFiller.bl_idname #В TranslateSockets() теперь по имени, а не по индексу, так что всё ещё "не обломались".
+            if ndTo.type=='REROUTE':
+                ndTo.inputs[0].type = ndFrom.inputs[0].type
+                ndTo.outputs[0].type = ndFrom.outputs[0].type
+            TranslateSockets(ndFrom.inputs, ndTo.inputs)
+            TranslateSockets(ndFrom.outputs, ndTo.outputs)
+        except: #import traceback; pri nt(traceback.format_exc())
             if ndTo: #Для своих NodeFiller, и в целом общее.
                 treeTo.nodes.remove(ndTo)
-            nd = treeTo.nodes.new(NodeFiller.bl_idname)
-            nd.blid = ndFrom.bl_idname
-            for put in {'inputs','outputs'}:
-                putsTo = getattr(nd, put)
-                for skFrom in getattr(ndFrom, put):
+            ndFi = treeTo.nodes.new(NodeFiller.bl_idname)
+            ndFi.blid = ndFrom.bl_idname
+            for att in 'inputs', 'outputs':
+                putsTo = getattr(ndFi, att)
+                for skFrom in getattr(ndFrom, att):
                     blid = skFrom.bl_idname
                     #blid = {'NodeSocketGeometry':'NodeSocketMaterial'}.get(blid, blid)
                     skTo = putsTo.new(blid, skFrom.name)
-                    for pr in skFrom.bl_rna.properties:
-                        if (not pr.is_readonly)and(pr.identifier not in set_ignoredSkProps):
-                            setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
-            nd.location = ndFrom.location
-            if ndFrom.bl_idname in set_omgApiNodesWidth: #-_-
-                nd.width = BNode.get_fields(ndFrom).width
+                    TranslateSkRna(skFrom, skTo)
+                    if skFrom.is_multi_input:
+                        BNodeSocket.GetFields(skTo).flag = 2048
+            ndFi.location = ndFrom.location
+            #todo0 топологический бардак с этим omg api нодами, а ещё FullCopyFromNode; навести бы порядок.
+            if ndFrom.bl_idname in {'CompositorNodeBoxMask', 'CompositorNodeEllipseMask'}: #set_omgApiNodesWidth
+                ndFi.width = BNode.GetFields(ndFrom).width
             else:
-                nd.width = ndFrom.width
-            nd.name = ndFrom.name
-            nd.label = ndFrom.label if ndFrom.label else ndFrom.bl_label
-            #nd.label = str(ex)
-            nd.use_custom_color = True
-            try: #Ох уж этот FunctionNodeInputColor.
-                if ndFrom.bl_idname=='NodeUndefined':
-                    nd.color = (0.633459, 0.226727, 0.226727)
-                    nd.hide = True #!?
-                else:
-                    nd.color = MixThCol(colBg, neTheme.input_node)
-            except:
-                pass
-set_omgApiNodesWidth = {'CompositorNodeBoxMask', 'CompositorNodeEllipseMask'}
+                ndFi.width = ndFrom.width
+            if ndFrom.bl_idname in set_omgApiNodesName:
+                BNode.GetFields(ndFi).name = BNode.GetFields(ndFrom).name
+            else:
+                ndFi.name = ndFrom.name
+            ndFi.label = ndFrom.label if ndFrom.label else ndFrom.bl_label
+            ndFi.use_custom_color = True
+            if ndFrom.bl_idname=='NodeUndefined':
+                OmgSetNodeColor(ndFi, (0.633459, 0.226727, 0.226727))
+                ndFi.hide = True
+            else:
+                def MixThCol(col1, col2, fac=0.4): #\source\blender\editors\space_node\node_draw.cc : node_draw_basis() : "Header"
+                    return col1*(1-fac)+col2*fac
+                OmgSetNodeColor(ndFi, MixThCol(colBg, neTheme.input_node))
 
-def RecrDoConvertNodeTree(treeFrom, blidTo):
+def PlaceRerouteFromSocket(skTar, tree=None):
+    tree = tree if tree else skTar.id_data
+    rr = tree.nodes.new('NodeReroute')
+    rr.inputs[0].type = skTar.type
+    rr.outputs[0].type = skTar.type
+    rr.label = skTar.label if skTar.label else skTar.name
+    bNd = BNode.GetFields(rr)
+    loc = BNodeSocket.GetFields(skTar).runtime.contents.location
+    bNd.locx = loc[0]
+    bNd.locy = loc[1]
+    return rr
+def DoConvertNodeTreeRecr(treeFrom, blidTo, suffix):
+    def TranslateLinks(treeFrom, treeTo): #Благодаря гениальной идеи кастомного нода, перенос линков сколлапсировался до 3-х строчек. Огонь!
+        def GetSkFromSkHh(nd, skTar):
+            for sk in nd.outputs if skTar.is_output else nd.inputs:
+                if sk.identifier==skTar.identifier:
+                    return sk
+            #Заметка: "Factor" у TextureNodeMixRGB и "Fac" у ShaderNodeMixRGB, обрабатывается как есть.
+            for sk in nd.outputs if skTar.is_output else nd.inputs: #Эта ветка особо без нужды.
+                if (sk.label if sk.label else sk.name)==(skTar.label if skTar.label else skTar.name):
+                    return sk
+        for lkFrom in treeFrom.links:
+            nd = lkFrom.from_node
+            nameFrom = BNode.GetFields(nd).name.decode('utf-8') if nd.bl_idname in set_omgApiNodesName else nd.name
+            nd = lkFrom.to_node
+            nameTo = BNode.GetFields(nd).name.decode('utf-8') if nd.bl_idname in set_omgApiNodesName else nd.name
+            ##
+            skOut = GetSkFromSkHh(treeTo.nodes[nameFrom], lkFrom.from_socket) #skOut = treeTo.nodes[nameFrom].outputs[GetSocketIndex(lkFrom.from_socket)
+            skIn = GetSkFromSkHh(treeTo.nodes[nameTo], lkFrom.to_socket) #skIn = treeTo.nodes[nameTo].inputs[GetSocketIndex(lkFrom.to_socket)]]
+            if not skOut:
+                skOut = PlaceRerouteFromSocket(lkFrom.from_socket, treeTo).outputs[0]
+            if not skIn:
+                skIn = PlaceRerouteFromSocket(lkFrom.to_socket, treeTo).inputs[0]
+            lkNew = treeTo.links.new(skOut, skIn)
+            lkNew.is_valid = lkFrom.is_valid
+            lkNew.is_muted = lkFrom.is_muted
+            for sk in skIn, skOut: #'GeometryNodeStoreNamedAttribute' в шейдер, см. идентификаторы и ветку по именам в GetSkFromSkHh().
+                skIn.enabled = True
+                skIn.hide = False
     nameTo = treeFrom.name
-    prefs = Prefs()
-    annex = prefs.suffixMain + getattr(prefs, *[li for li in {'suffixSh', 'suffixGm', 'suffixCp', 'suffixTx'} if li[6]==blidTo[0]])
-    if not nameTo.endswith(annex):
-        nameTo += annex
+    if not nameTo.endswith(suffix):
+        nameTo += suffix
     treeTo = bpy.data.node_groups.get(nameTo) or bpy.data.node_groups.new(nameTo, blidTo)
     ##
-    list_allFoundLinks, list_allFoundNodes = RememberAllLinks(nameTo)
-    InterfacesTransfer(treeFrom, treeTo)
-    RestoreAllLinks(list_allFoundLinks, list_allFoundNodes)
+    list_remNode = RememberAllLinks(nameTo)
+    TranslateSkfs(treeFrom, treeTo)
+    RestoreAllLinks(list_remNode)
     ##
-    NodesTransfer(treeFrom, treeTo)
-    for lk in treeFrom.links: #Благодаря гениальной идеи кастомного нода, перенос линков сколлапсировался до 4-х строчек. Огонь!
-        try:
-            skOut = treeTo.nodes.get(lk.from_node.name).outputs[GetSocketIndex(lk.from_socket)]
-            skIn = treeTo.nodes.get(lk.to_node.name).inputs[GetSocketIndex(lk.to_socket)]
-            treeTo.links.new(skOut, skIn)
-        except: #Так же, как и в FullCopyNode().
-            pass
+    TranslateNodes(treeFrom, treeTo, suffix) #Передача suffix для следующей рекурсии. Неплохо было бы бы это как-то подадекватить.
+    TranslateLinks(treeFrom, treeTo)
     ##
     for nd in treeTo.nodes:
         nd.select = False
     treeTo.nodes.active = None #Пользовательские "елозенья" от последующих конвертаций.
     return treeTo
 
-def AddHighlightingText(where, *texts):
-    rowMain = where.row(align=True)
-    rowMain.alignment = 'LEFT'
-    for cyc, txt in enumerate(texts):
+#todo0 можно ещё мб переносить ноды с подходящим poll'ом для обоих деревьев полной копией, чтобы вручную свойства не переносить; но это не точно.
+
+def LyAddHighlightingText(where, *args_txt):
+    rowRoot = where.row(align=True)
+    for cyc, txt in enumerate(args_txt):
         if txt:
-            row = rowMain.row(align=True)
-            row.alignment = 'CENTER'
+            row = rowRoot.row(align=True)
+            row.alignment = 'LEFT'
             row.label(text=txt)
             row.active = cyc%2
 
-list_lastConverts = []
+dict_lastConverts = {}
 
-set_gncNdPollTypeTarget = {'GROUP', 'GROUP_INPUT', 'GROUP_OUTPUT'}
 def GetTargetsToConvert(tree):
     list_result = []
     for nd in tree.nodes:
-        if (nd.select)and(nd.type in set_gncNdPollTypeTarget):
-            if nd.type=='GROUP':
-                if nd.node_tree:
-                    list_result.append(nd.node_tree)
-            else:
-                list_result.append(tree)
+        if nd.select:
+            match nd.type:
+                case 'GROUP':
+                    if nd.node_tree:
+                        list_result.append(nd.node_tree)
+                case 'GROUP_INPUT'|'GROUP_OUTPUT':
+                    list_result.append(tree)
     return list_result
 
 class OpGreatGroupConverter(bpy.types.Operator):
-    bl_idname = 'node.gnc_op_greatnodeconverter'
+    bl_idname = 'node.greatgroupconverter'
     bl_label = "Great Group Converter"
     bl_options = {'UNDO'}
     opt: bpy.props.StringProperty()
@@ -328,20 +430,17 @@ class OpGreatGroupConverter(bpy.types.Operator):
     def execute(self, context):
         match self.opt:
             case 'Conv':
+                suffix = Prefs().txtSuffixMain+getattr(Prefs(), *[att for att in {'txtSuffixSh', 'txtSuffixGm', 'txtSuffixCp', 'txtSuffixTx'} if att[9]==self.who[0]])
                 for li in GetTargetsToConvert(context.space_data.edit_tree):
-                    lastConvertTree = RecrDoConvertNodeTree(li, self.who)
-                    if lastConvertTree in list_lastConverts:
-                        list_lastConverts.remove(lastConvertTree)
-                    list_lastConverts.append(lastConvertTree)
+                    tree = DoConvertNodeTreeRecr(li, self.who, suffix)
+                    dict_lastConverts[tree] = tree.name
             case 'Add':
                 bpy.ops.node.add_node('INVOKE_DEFAULT', type=context.space_data.tree_type.replace("Tree", "Group"), use_transform=True)
                 context.space_data.edit_tree.nodes.active.node_tree = bpy.data.node_groups.get(self.who)
         return {'FINISHED'}
 
-dict_mapTreeIco = {'ShaderNodeTree':'NODE_MATERIAL', 'GeometryNodeTree':'GEOMETRY_NODES', 'CompositorNodeTree':'NODE_COMPOSITING', 'TextureNodeTree':'NODE_TEXTURE'}
-
 class PanelGreatGroupConverter(bpy.types.Panel):
-    bl_idname = 'GNC_PT_GreatGroupConverter'
+    bl_idname = 'GGC_PT_GreatGroupConverter'
     bl_label = "Great Group Converter"
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
@@ -354,86 +453,94 @@ class PanelGreatGroupConverter(bpy.types.Panel):
     def draw(self, context):
         colLy = self.layout.column()
         tree = context.space_data.edit_tree
-        list_targets = GetTargetsToConvert(tree)
+        blidTree = tree.bl_idname
         colMain = colLy.column(align=True)
-        bow = colMain.box()
-        bow.scale_y = 0.5
+        boxTar = colMain.box()
+        boxTar.scale_y = 0.5
+        list_targets = GetTargetsToConvert(tree)
         if list_targets:
             for li in list_targets:
-                AddHighlightingText(bow.row(), "Convert", li.name, "to"+":"*(li==tree))
+                LyAddHighlightingText(boxTar.row(), "Convert", li.name, "to"+":"*(li==tree)) #todo0 ctypes масштаб региона, и если текст не вмещается, показывать только имена.
         else:
-            AddHighlightingText(bow.row(), '* none to selected *')
+            LyAddHighlightingText(boxTar.row(), 'none to selected')
+        ##
         rowConv = colMain.row(align=True)
         rowConv.enabled = not not list_targets
-        for di in dict_mapTreeIco:
+        for dk, dv in dict_mapTreeIco.items():
             row = rowConv.row(align=True)
-            row.scale_x = 2.05
-            op = row.operator(OpGreatGroupConverter.bl_idname, text="", icon=dict_mapTreeIco[di])
+            row.scale_x = 2.08 #Начиная с `2.05` оно будет в заполняющем виде; 2.08 -- для 'view.ui_scale'.
+            row.enabled = blidTree!=dk
+            op = row.operator(OpGreatGroupConverter.bl_idname, text="", icon=dv)
             op.opt = 'Conv'
-            op.who = di
-            row.enabled = context.space_data.tree_type!=di
-        if list_lastConverts:
-            aNd = tree.nodes.active
+            op.who = dk
+        ##
+        if dict_lastConverts:
             colLasts = colLy.column(align=True)
-            bow = colLasts.box()
-            bow.scale_y = 0.5
-            AddHighlightingText(bow.row(), "", "Last converts:")
+            boxLabel = colLasts.box()
+            boxLabel.scale_y = 0.6
+            LyAddHighlightingText(boxLabel.row(), "", "Last converts:")
             colList = colLasts.box().column(align=True)
-            canTree = aNd.node_tree if (aNd)and(aNd.type=='GROUP') else None
-            for li in reversed(list_lastConverts):
-                if str(li).find("invalid")!=-1:
-                    list_lastConverts.remove(li)
-                    continue
-                rowItem = colList.row(align=True)
+            aNd = tree.nodes.active
+            soldTreeNg = aNd.node_tree if (aNd)and(aNd.select)and(aNd.type=='GROUP') else None
+            isSucessTgl = True
+            while isSucessTgl:
+                isSucessTgl = False
+                for dk, dv in dict_lastConverts.items():
+                    if str(dk).find("invalid")!=-1: #bpy.data.node_groups.get(dv, None) is None:
+                        del dict_lastConverts[dk]
+                        isSucessTgl = True
+                        break
+            for ng in reversed(dict_lastConverts):
+                rowItem = colList.row().row(align=True)
+                rowItem.active = ng.bl_idname==blidTree
                 rowAdd = rowItem.row(align=True)
                 rowAdd.scale_x = 1.45
-                op = rowAdd.operator(OpGreatGroupConverter.bl_idname, text="", icon='TRIA_LEFT', depress=(li==canTree) if canTree else False)
+                rowAdd.enabled = rowItem.active
+                op = rowAdd.operator(OpGreatGroupConverter.bl_idname, text="", icon='TRIA_LEFT', depress=(ng==soldTreeNg) if soldTreeNg else False)
                 op.opt = 'Add'
-                op.who = li.name
-                rowAdd.enabled = li.bl_idname.replace("Group","Tree")==context.space_data.tree_type
+                op.who = ng.name
                 rowName = rowItem.row(align=True)
-                rowName.prop(bpy.data.node_groups.get(li.name),'name', text="", icon=dict_mapTreeIco[li.bl_idname])
-                rowName.active = rowAdd.enabled
-
-list_classes += [OpGreatGroupConverter, PanelGreatGroupConverter]
-
-def AddLabel(where, txt, tgl=True):
-    box = where.box()
-    row = box.row(align=True)
-    row.alignment = 'CENTER'
-    row.label(text=txt)
-    row.active = tgl
-    box.scale_y = 0.5
-def GetBoxLabel(where, txt="", tgl=True):
-    col = where.column(align=True)
-    if txt:
-        AddLabel(col, txt, tgl)
-    return col.box()
+                rowName.prop(ng,'name', text="", icon=ng.bl_icon)
 
 def Prefs():
     return bpy.context.preferences.addons[addonName].preferences
 
 class AddonPrefs(bpy.types.AddonPreferences):
-    bl_idname = addonName if __name__=="__main__" else __name__
-    suffixMain: bpy.props.StringProperty(name="Main",       default="_GGC"  )
-    suffixSh:   bpy.props.StringProperty(name="Shader",     default="_toShd")
-    suffixGm:   bpy.props.StringProperty(name="Geometry",   default="_toGeo")
-    suffixCp:   bpy.props.StringProperty(name="Compositor", default="_toCmp")
-    suffixTx:   bpy.props.StringProperty(name="Texture",    default="_toTex")
+    bl_idname = addonName
+    txtSuffixMain: bpy.props.StringProperty(name="Main",       default="_GGC"  )
+    #Нужно сохранять порядок с dict_mapTreeIco:
+    txtSuffixSh:   bpy.props.StringProperty(name="Shader",     default="_toShad")
+    txtSuffixGm:   bpy.props.StringProperty(name="Geometry",   default="_toGeo")
+    txtSuffixCp:   bpy.props.StringProperty(name="Compositor", default="_toComp")
+    txtSuffixTx:   bpy.props.StringProperty(name="Texture",    default="_toTex")
     def draw(self, context):
-        colLy = self.layout.column()
-        box = GetBoxLabel(colLy, "preferences", False)
-        colProps = box.column(align=True)
-        for k in self.__annotations__.keys():
-            colProps.row().prop(self, k)
+        col = self.layout.column(align=True)
+        box = col.box()
+        box.scale_y = 0.5
+        row = box.row(align=True)
+        row.alignment = 'CENTER'
+        row.label(text="Suffixes")
+        row.active = False
+        row = col.box().row(align=True)
+        for att, ico in zip(self.__annotations__.keys(), ['NODETREE']+list(dict_mapTreeIco.values())):
+            row.row().prop(self, att, text="", icon=ico)
 
-list_classes += [AddonPrefs]
-
+list_clsToReg = []
 def register():
-    for li in list_classes:
+    from gc import collect
+    collect(); del collect
+    tup_typesToReg = (getattr(bpy.types, att) for att in "Node Operator Panel AddonPreferences".split(" "))
+    set_globals = set((dv for dk, dv in dict(globals()).items() if not( (dv.__class__ in {dict, set, list})or(dk=='__spec__') )))
+    list_clsToReg.clear() #Заметка: нужно для перерегистраций.
+    def RecrToReg(list_subs):
+        for li in list_subs:
+            list_clsToReg.append(li)
+            RecrToReg(li.__subclasses__())
+    RecrToReg([si for tp in tup_typesToReg for si in set_globals.intersection(set((li for li in tp.__subclasses__() if li.__module__==__name__)))])
+    for li in list_clsToReg:
         bpy.utils.register_class(li)
 def unregister():
-    for li in reversed(list_classes):
+    for li in reversed(list_clsToReg):
         bpy.utils.unregister_class(li)
 
 if __name__=="__main__":
