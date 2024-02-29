@@ -275,7 +275,7 @@ def TranslateNodes(treeFrom, treeTo, suffix):
         for pr in reversed(skFrom.bl_rna.properties):
             if (not pr.is_readonly)and(pr.identifier not in {'type', 'bl_idname'}):
                 if pr.identifier=='default_value':
-                    with TryAndPass(): #Что-то не чистое творится, группа из шейдеров в геометрию, содержащая интерфейс вектора нарпавления.
+                    with TryAndPass(): #Что-то не чистое творится. Группа из шейдеров в геометрию, содержащая интерфейс вектора нарпавления.
                         setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
                 else:
                     setattr(skTo, pr.identifier, getattr(skFrom, pr.identifier))
@@ -301,6 +301,8 @@ def TranslateNodes(treeFrom, treeTo, suffix):
                 blid = {'ShaderNodeRGBCurve':'CompositorNodeCurveRGB', 'ShaderNodeVectorCurve':'CompositorNodeCurveVec'}.get(blid, blid)
             if blidTo in {'ShaderNodeTree', 'GeometryNodeTree'}:
                 blid = {'CompositorNodeCurveRGB':'ShaderNodeRGBCurve', 'CompositorNodeCurveVec':'ShaderNodeVectorCurve'}.get(blid, blid)
+            if blidTo in {'TextureNodeTree', 'ShaderNodeTree'}:
+                blid = {'ShaderNodeRGBCurve':'TextureNodeCurveRGB', 'TextureNodeCurveRGB':'ShaderNodeRGBCurve'}.get(blid, blid)
             ndTo = treeTo.nodes.new(blid)
             FullCopyFromNode(ndFrom, ndTo)
             if ('node_tree' in ndTo.bl_rna.properties)and(ndFrom.node_tree):
@@ -364,7 +366,7 @@ def DoConvertNodeTreeRecr(treeFrom, blidTo, suffix):
                 if sk.identifier==skTar.identifier:
                     return sk
             #Заметка: "Factor" у TextureNodeMixRGB и "Fac" у ShaderNodeMixRGB, обрабатывается как есть.
-            for sk in nd.outputs if skTar.is_output else nd.inputs: #Эта ветка особо без нужды.
+            for sk in nd.outputs if skTar.is_output else nd.inputs: #Эта ветка особо без нужды, но важна для всадников группы. #todo1 придумать, что делать с накапливающимися dnf'ами всадников.
                 if (sk.label if sk.label else sk.name)==(skTar.label if skTar.label else skTar.name):
                     return sk
         for lkFrom in treeFrom.links:
